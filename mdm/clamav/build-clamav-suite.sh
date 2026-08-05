@@ -496,9 +496,30 @@ if ! grep -q '^DatabaseDirectory' "${ETC}/freshclam.conf" 2>/dev/null; then
         "$DB" >> "${ETC}/freshclam.conf"
 fi
 
+# freshclam drops privileges to DatabaseOwner *before* it opens its log or
+# writes definitions, so root-owned paths fail with EACCES even though this
+# script runs as root. macOS ships the account as _clamav, while the vendor
+# sample's commented-out default names `clamav`, which does not exist here --
+# so state it explicitly rather than relying on the compiled-in default.
+DB_OWNER="_clamav"
+if ! dscl . -read "/Users/${DB_OWNER}" >/dev/null 2>&1; then
+    # No dedicated account: let freshclam stay root. It warns, but works.
+    DB_OWNER="root"
+fi
+if ! grep -q '^DatabaseOwner' "${ETC}/freshclam.conf" 2>/dev/null; then
+    printf 'DatabaseOwner %s\n' "$DB_OWNER" >> "${ETC}/freshclam.conf"
+fi
+
 mkdir -p "$DB"
+
+# Binaries and config stay root-owned; only the database directory and the
+# update log need to be writable by the account freshclam drops to. Order
+# matters -- the recursive chown would otherwise undo the targeted one.
 chown -R root:wheel "$CLAMAV_DIR"
+chown -R "$DB_OWNER" "$DB"
+
 touch /var/log/freshclam.log /var/log/freshclam.err
+chown "$DB_OWNER" /var/log/freshclam.log /var/log/freshclam.err
 chmod 640 /var/log/freshclam.log /var/log/freshclam.err
 
 # The GUI finds clamscan through the LSEnvironment PATH in its Info.plist, which
