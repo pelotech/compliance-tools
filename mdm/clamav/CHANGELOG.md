@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.3](https://github.com/pelotech/compliance-tools/compare/clamav-suite-v1.0.2...clamav-suite-v1.0.3) (2026-08-05)
+
+
+### Bug Fixes
+
+* **clamav:** find clamscan via a compiled launcher, not LSEnvironment ([ae87587](https://github.com/pelotech/compliance-tools/commit/ae875879cb992c7635007a286ed73f0c45b1c74d))
+
+
+### Docs
+
+* add base readme ([2ef4241](https://github.com/pelotech/compliance-tools/commit/2ef4241f85e6de33667b5595d384868f2859c9a2))
+
 ## [1.0.2](https://github.com/pelotech/compliance-tools/compare/clamav-suite-v1.0.1...clamav-suite-v1.0.2) (2026-08-05)
 
 
