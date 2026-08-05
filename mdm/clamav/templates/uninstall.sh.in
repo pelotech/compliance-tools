@@ -14,7 +14,7 @@ set -uo pipefail
 
 SUITE_VERSION="__SUITE_VERSION__"
 GUI_APP="/Applications/__GUI_APP_NAME__"
-GUI_BUNDLE_ID="__GUI_BUNDLE_ID__"
+GUI_BUNDLE_ID="__BUNDLE_ID__"
 CLAMAV_DIR="__CLAMAV_DIR__"
 DAEMON_LABEL="__DAEMON_LABEL__"
 SUPPORT_DIR="__SUPPORT_DIR__"
@@ -136,7 +136,22 @@ for proc in clamav-gui clamd freshclam clamscan clamdscan; do
   run pkill -x "$proc"
 done
 
-# 3. Payload roots. /usr/local/clamav belongs exclusively to ClamAV, so removing
+# 3. CLI symlinks in /usr/local/bin. Removed before the tree they point into, and
+#    only when they actually point there -- a link someone else owns, or a real
+#    binary from another ClamAV installation, is left alone. Skipping this would
+#    leave dangling symlinks on the PATH that fail confusingly.
+say ""
+say "removing CLI symlinks"
+for tool in clamscan clamdscan clamdtop clamconf clambc clamsubmit freshclam sigtool clamd; do
+  link="/usr/local/bin/${tool}"
+  [ -L "$link" ] || continue
+  case "$(readlink "$link")" in
+    "${CLAMAV_DIR}"/*) remove "$link" ;;
+    *) say "  skipped        $link (points outside ${CLAMAV_DIR})" ;;
+  esac
+done
+
+# 4. Payload roots. /usr/local/clamav belongs exclusively to ClamAV, so removing
 #    the whole tree also clears the definition database (~250 MB) and the
 #    freshclam.conf / clamd.conf that postinstall seeded from the .sample files
 #    -- none of which appear in any package receipt.
@@ -146,11 +161,11 @@ remove "$GUI_APP"
 remove "$CLAMAV_DIR"
 remove "/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
 
-# 4. Logs, also untracked by any receipt.
+# 5. Logs, also untracked by any receipt.
 remove /var/log/freshclam.log
 remove /var/log/freshclam.err
 
-# 5. Per-user GUI state. Not covered by any receipt and not under /Applications,
+# 6. Per-user GUI state. Not covered by any receipt and not under /Applications,
 #    so it survives an otherwise complete uninstall and silently repopulates the
 #    app's history and settings on reinstall.
 if [ "$KEEP_USER_DATA" -eq 1 ]; then
@@ -172,13 +187,13 @@ else
   done
 fi
 
-# 6. The Full Disk Access grant is keyed to the bundle ID and outlives the app,
+# 7. The Full Disk Access grant is keyed to the bundle ID and outlives the app,
 #    so it silently re-applies on reinstall. Fails harmlessly if never granted.
 say ""
 say "clearing the Full Disk Access grant"
 run tccutil reset SystemPolicyAllFiles "$GUI_BUNDLE_ID"
 
-# 7. Receipts last. pkgutil --forget only discards receipt data -- it removes no
+# 8. Receipts last. pkgutil --forget only discards receipt data -- it removes no
 #    files -- so doing it earlier would throw away the only record of what was
 #    installed while the files were still on disk.
 say ""
@@ -198,7 +213,7 @@ for id in $RECEIPTS; do
   fi
 done
 
-# 8. The support directory holds this script. Safe because we re-exec'd from a
+# 9. The support directory holds this script. Safe because we re-exec'd from a
 #    temp copy above.
 say ""
 say "removing the support directory"

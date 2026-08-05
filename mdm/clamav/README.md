@@ -2,7 +2,9 @@
 
 Builds one signed, notarized distribution package containing:
 
-- **ClamAV CLI** — [Cisco-Talos/clamav](https://github.com/Cisco-Talos/clamav), installed to `/usr/local/clamav`
+- **ClamAV CLI** — [Cisco-Talos/clamav](https://github.com/Cisco-Talos/clamav), installed to
+  `/usr/local/clamav`, with `clamscan`, `freshclam`, `clamdscan`, `sigtool` and friends symlinked
+  into `/usr/local/bin` so they are on the shell `PATH`
 - **ClamAV GUI** — [ArsenTech/clamav-gui](https://github.com/ArsenTech/clamav-gui), installed to `/Applications`
 - A `freshclam` LaunchDaemon that refreshes definitions weekly, Sunday at 00:00
 
@@ -335,11 +337,13 @@ runs to completion.
 
 ## Known constraints
 
-- **`LSEnvironment` only supplies variables the launch does not already provide.** Finder, Dock
-  and `loginwindow` carry no `PATH` at all, so an app launched from them takes the `LSEnvironment`
-  one — which is why this works for deployed use. But launching from a **terminal** passes the
-  shell's `PATH`, which wins, and the app then hits the "no ClamAV" page. When testing, quit the
-  app fully and launch it from Finder; a terminal launch proves nothing.
+- **Two mechanisms cover the GUI's `clamscan` lookup, and both are needed.** `LSEnvironment`
+  only supplies variables the launch does not already provide: Finder, Dock and `loginwindow`
+  carry no `PATH`, so apps launched from them take the `LSEnvironment` one. A **terminal or IDE**
+  launch passes the shell's `PATH`, which wins — and that is where the `/usr/local/bin` symlinks
+  take over, since `/etc/paths` puts that directory on every shell `PATH`. Neither alone is
+  sufficient: `/usr/local/bin` is not on launchd's default `PATH`, so symlinks cannot rescue a
+  Finder launch, and `LSEnvironment` cannot override an inherited one.
 - **A wrapper script is not an alternative.** Replacing `Contents/MacOS/clamav-gui` with a shell
   trampoline that exports `PATH` and execs the real binary fails: launchd refuses to spawn an app
   whose main executable is not Mach-O, with `Launch failed / Launchd job spawn failed`. A

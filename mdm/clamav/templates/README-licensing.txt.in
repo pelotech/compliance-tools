@@ -1,0 +1,14 @@
+ClamAV Suite __SUITE_VERSION__
+
+Bundles unmodified Cisco-Talos ClamAV __CLAMAV_VER__
+  https://github.com/__CLAMAV_REPO__/releases/tag/__CLAMAV_TAG__
+
+Bundles ArsenTech ClamAV GUI __GUI_VER__ (GPL-3.0), arm64 build, taken as
+released and modified as follows. No executable code is altered.
+  1. An LSEnvironment PATH key is added to Contents/Info.plist so the app can
+     find clamscan at __CLAMAV_DIR__/bin.
+  2. The bundle is re-signed with a Developer ID Application certificate.
+
+  Upstream source: https://github.com/__GUI_REPO__/releases/tag/__GUI_TAG__
+  The exact modifications are performed by, and documented in,
+  mdm/clamav/build-clamav-suite.sh in pelotech/compliance-tools.

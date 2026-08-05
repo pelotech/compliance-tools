@@ -41,6 +41,7 @@ set -euo pipefail
 # ---------------------------------------------------------------- config -----
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATES="$SCRIPT_DIR/templates"
 VERSIONS_FILE="$SCRIPT_DIR/versions.env"
 VERSION_FILE="$SCRIPT_DIR/version.txt"
 CACHE="$SCRIPT_DIR/.cache"
@@ -77,8 +78,10 @@ log()  { printf '==> %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Prints the whole leading comment block, stopping at the first non-comment
+# line. No line numbers, so editing the header cannot silently truncate --help.
 usage() {
-  sed -n '3,40p' "${BASH_SOURCE[0]}" | sed 's/^#\{1,2\} \{0,1\}//; s/^#$//'
+  awk 'NR > 2 { if (!/^#/) exit; sub(/^#[[:space:]]?/, ""); print }' "${BASH_SOURCE[0]}"
   exit "${1:-0}"
 }
 
@@ -86,6 +89,36 @@ need() {
   for c in "$@"; do
     command -v "$c" >/dev/null 2>&1 || die "missing required tool: $c"
   done
+}
+
+# Render a template from templates/ into place.
+#
+# Every __PLACEHOLDER__ resolves to the same-named shell variable, so adding one
+# means adding a variable and nothing else. Values are substituted with `|` as
+# the sed delimiter, so none of them may contain `|` or `&` -- they are paths,
+# versions, repo slugs and bundle identifiers, so that holds.
+#
+# Only the placeholders a template actually contains are substituted, and an
+# empty or unset value is fatal. Templates are rendered at different stages, so
+# that check is what catches one being rendered before its values exist.
+render() {
+  local tpl="$TEMPLATES/$1" dest="$2" ph name val leftover
+  local -a args=()
+  [ -f "$tpl" ] || die "missing template: templates/$1"
+
+  while IFS= read -r ph; do
+    name="${ph//__/}"
+    val="${!name-}"
+    [ -n "$val" ] || die "templates/$1 uses ${ph}, but \$${name} is empty here.
+Templates render in stage order; this one runs before that value is set."
+    args+=(-e "s|${ph}|${val}|g")
+  done < <(grep -ohE '__[A-Z_]+__' "$tpl" | sort -u)
+
+  sed ${args[@]+"${args[@]}"} "$tpl" > "$dest"
+
+  leftover="$(grep -o '__[A-Z_]\{3,\}__' "$dest" | sort -u || true)"
+  [ -z "$leftover" ] || die "unsubstituted placeholders in $(basename "$dest"):
+$(printf '%s\n' "$leftover" | sed 's/^/  /')"
 }
 
 # macOS ships shasum, most Linux images ship sha256sum. Support both so the
@@ -256,7 +289,9 @@ esac
 need curl tar pkgutil pkgbuild productbuild productsign lipo codesign \
      xcrun awk mktemp xmllint
 [ -x /usr/libexec/PlistBuddy ] || die "missing /usr/libexec/PlistBuddy"
-[ -f "$SCRIPT_DIR/uninstall.sh.in" ] || die "missing $SCRIPT_DIR/uninstall.sh.in"
+for t in postinstall.in uninstall.sh.in freshclam.plist.in README-licensing.txt.in; do
+  [ -f "$TEMPLATES/$t" ] || die "missing template: templates/$t"
+done
 
 [ -f "$VERSION_FILE" ] || die "missing $VERSION_FILE (owned by release-please)"
 SUITE_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
@@ -429,36 +464,7 @@ fi
 # pull, so a fresh install is not left without definitions either way.
 
 DAEMON_PLIST="$WORK/gui-root/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
-cat > "$DAEMON_PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${DAEMON_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${CLAMAV_DIR}/bin/freshclam</string>
-        <string>--quiet</string>
-    </array>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Weekday</key>
-        <integer>0</integer>
-        <key>Hour</key>
-        <integer>0</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>LowPriorityIO</key>
-    <true/>
-    <key>StandardErrorPath</key>
-    <string>/var/log/freshclam.err</string>
-</dict>
-</plist>
-PLIST
+render freshclam.plist.in "$DAEMON_PLIST"
 chmod 644 "$DAEMON_PLIST"
 
 # ------------------------------------------------------ 6. postinstall -------
@@ -467,103 +473,15 @@ chmod 644 "$DAEMON_PLIST"
 # exits non-zero on a transient network failure -- an offline device or a
 # TLS-inspecting proxy must not fail the whole install.
 
-cat > "$WORK/postinstall.in" <<'POST'
-#!/bin/bash
-set -uo pipefail
 
-CLAMAV_DIR="__CLAMAV_DIR__"
-ETC="${CLAMAV_DIR}/etc"
-DB="${CLAMAV_DIR}/share/clamav"
-DAEMON_LABEL="__DAEMON_LABEL__"
-PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
-APP="/Applications/__GUI_APP_NAME__"
 
-# Cisco installs only .conf.sample files, and clamav refuses to start while the
-# Example line is present.
-seed_conf() {
-    local target="$1" sample="$1.sample"
-    [ -f "$target" ] && return 0
-    [ -f "$sample" ] || return 0
-    sed 's/^Example/#Example/' "$sample" > "$target"
-    chmod 644 "$target"
-}
-
-seed_conf "${ETC}/freshclam.conf"
-seed_conf "${ETC}/clamd.conf"
-
-if ! grep -q '^DatabaseDirectory' "${ETC}/freshclam.conf" 2>/dev/null; then
-    printf 'DatabaseDirectory %s\nUpdateLogFile /var/log/freshclam.log\n' \
-        "$DB" >> "${ETC}/freshclam.conf"
-fi
-
-# freshclam drops privileges to DatabaseOwner *before* it opens its log or
-# writes definitions, so root-owned paths fail with EACCES even though this
-# script runs as root. macOS ships the account as _clamav, while the vendor
-# sample's commented-out default names `clamav`, which does not exist here --
-# so state it explicitly rather than relying on the compiled-in default.
-DB_OWNER="_clamav"
-if ! dscl . -read "/Users/${DB_OWNER}" >/dev/null 2>&1; then
-    # No dedicated account: let freshclam stay root. It warns, but works.
-    DB_OWNER="root"
-fi
-if ! grep -q '^DatabaseOwner' "${ETC}/freshclam.conf" 2>/dev/null; then
-    printf 'DatabaseOwner %s\n' "$DB_OWNER" >> "${ETC}/freshclam.conf"
-fi
-
-mkdir -p "$DB"
-
-# Binaries and config stay root-owned; only the database directory and the
-# update log need to be writable by the account freshclam drops to. Order
-# matters -- the recursive chown would otherwise undo the targeted one.
-chown -R root:wheel "$CLAMAV_DIR"
-chown -R "$DB_OWNER" "$DB"
-
-touch /var/log/freshclam.log /var/log/freshclam.err
-chown "$DB_OWNER" /var/log/freshclam.log /var/log/freshclam.err
-chmod 640 /var/log/freshclam.log /var/log/freshclam.err
-
-# The GUI finds clamscan through the LSEnvironment PATH in its Info.plist, which
-# LaunchServices reads from its own cache. On an upgrade over an existing
-# install that cache can be stale, so re-register the bundle explicitly.
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
-[ -x "$LSREGISTER" ] && [ -d "$APP" ] && "$LSREGISTER" -f "$APP" 2>/dev/null
-
-# First definition pull. Non-fatal: the daemon retries on its own schedule.
-"${CLAMAV_DIR}/bin/freshclam" --quiet || \
-    echo "postinstall: initial freshclam failed, daemon will retry" >&2
-
-launchctl bootout "system/${DAEMON_LABEL}" 2>/dev/null || true
-launchctl bootstrap system "$PLIST" || \
-    echo "postinstall: bootstrap failed, daemon loads at next boot" >&2
-
-exit 0
-POST
-
-sed -e "s|__DAEMON_LABEL__|${DAEMON_LABEL}|g" \
-    -e "s|__CLAMAV_DIR__|${CLAMAV_DIR}|g" \
-    -e "s|__GUI_APP_NAME__|${GUI_APP_NAME}|g" \
-    "$WORK/postinstall.in" > "$WORK/scripts/postinstall"
+render postinstall.in "$WORK/scripts/postinstall"
 chmod 755 "$WORK/scripts/postinstall"
 
 # The repo is public and this ships a modified GPL-3.0 bundle (the LSEnvironment
 # key), so carry the upstream licence alongside it.
 mkdir -p "$WORK/gui-root${SUPPORT_DIR}"
-cat > "$WORK/gui-root${SUPPORT_DIR}/README-licensing.txt" <<LIC
-ClamAV Suite ${SUITE_VERSION}
-
-Bundles unmodified Cisco-Talos ClamAV ${CLAMAV_VER}
-  https://github.com/${CLAMAV_REPO}/releases/tag/${CLAMAV_TAG}
-
-Bundles ArsenTech ClamAV GUI ${GUI_VER} (GPL-3.0), arm64 build, taken as
-released and modified as follows. No executable code is altered.
-  1. An LSEnvironment PATH key is added to Contents/Info.plist so the app can
-     find clamscan at ${CLAMAV_DIR}/bin.
-  2. The bundle is re-signed with a Developer ID Application certificate.
-
-  Upstream source: https://github.com/${GUI_REPO}/releases/tag/${GUI_TAG}
-  The exact modifications are performed by, and documented in,
-  mdm/clamav/build-clamav-suite.sh in pelotech/compliance-tools.
-LIC
+render README-licensing.txt.in "$WORK/gui-root${SUPPORT_DIR}/README-licensing.txt"
 
 # ------------------------------------- 7. unwrap the vendor distribution -----
 # Done before our own component is built because the uninstaller needs Cisco's
@@ -600,22 +518,8 @@ done
 # only way a machine can be cleaned up is a script that ships inside the payload.
 
 RECEIPTS="${VENDOR_RECEIPTS[*]} ${GUI_COMPONENT_ID}"
-sed -e "s|__SUITE_VERSION__|${SUITE_VERSION}|g" \
-    -e "s|__GUI_APP_NAME__|${GUI_APP_NAME}|g" \
-    -e "s|__GUI_BUNDLE_ID__|${BUNDLE_ID}|g" \
-    -e "s|__CLAMAV_DIR__|${CLAMAV_DIR}|g" \
-    -e "s|__DAEMON_LABEL__|${DAEMON_LABEL}|g" \
-    -e "s|__SUPPORT_DIR__|${SUPPORT_DIR}|g" \
-    -e "s|__RECEIPTS__|${RECEIPTS}|g" \
-    "$SCRIPT_DIR/uninstall.sh.in" > "$WORK/gui-root${SUPPORT_DIR}/uninstall.sh"
+render uninstall.sh.in "$WORK/gui-root${SUPPORT_DIR}/uninstall.sh"
 chmod 755 "$WORK/gui-root${SUPPORT_DIR}/uninstall.sh"
-
-# A placeholder left unsubstituted would ship a broken uninstaller, and nobody
-# finds out until the day they need it.
-if grep -q '__[A-Z_]\{3,\}__' "$WORK/gui-root${SUPPORT_DIR}/uninstall.sh"; then
-  die "unsubstituted placeholders in the generated uninstaller:
-$(grep -o '__[A-Z_]\{3,\}__' "$WORK/gui-root${SUPPORT_DIR}/uninstall.sh" | sort -u | sed 's/^/  /')"
-fi
 bash -n "$WORK/gui-root${SUPPORT_DIR}/uninstall.sh" \
   || die "the generated uninstaller is not valid bash"
 info "uninstaller ${SUPPORT_DIR}/uninstall.sh  (receipts: ${RECEIPTS})"

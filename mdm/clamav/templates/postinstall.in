@@ -1,0 +1,104 @@
+#!/bin/bash
+set -uo pipefail
+
+CLAMAV_DIR="__CLAMAV_DIR__"
+ETC="${CLAMAV_DIR}/etc"
+DB="${CLAMAV_DIR}/share/clamav"
+DAEMON_LABEL="__DAEMON_LABEL__"
+PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
+APP="/Applications/__GUI_APP_NAME__"
+
+# Cisco installs only .conf.sample files, and clamav refuses to start while the
+# Example line is present.
+seed_conf() {
+    local target="$1" sample="$1.sample"
+    [ -f "$target" ] && return 0
+    [ -f "$sample" ] || return 0
+    sed 's/^Example/#Example/' "$sample" > "$target"
+    chmod 644 "$target"
+}
+
+seed_conf "${ETC}/freshclam.conf"
+seed_conf "${ETC}/clamd.conf"
+
+if ! grep -q '^DatabaseDirectory' "${ETC}/freshclam.conf" 2>/dev/null; then
+    printf 'DatabaseDirectory %s\nUpdateLogFile /var/log/freshclam.log\n' \
+        "$DB" >> "${ETC}/freshclam.conf"
+fi
+
+# freshclam drops privileges to DatabaseOwner *before* it opens its log or
+# writes definitions, so root-owned paths fail with EACCES even though this
+# script runs as root. macOS ships the account as _clamav, while the vendor
+# sample's commented-out default names `clamav`, which does not exist here --
+# so state it explicitly rather than relying on the compiled-in default.
+DB_OWNER="_clamav"
+if ! dscl . -read "/Users/${DB_OWNER}" >/dev/null 2>&1; then
+    # No dedicated account: let freshclam stay root. It warns, but works.
+    DB_OWNER="root"
+fi
+if ! grep -q '^DatabaseOwner' "${ETC}/freshclam.conf" 2>/dev/null; then
+    printf 'DatabaseOwner %s\n' "$DB_OWNER" >> "${ETC}/freshclam.conf"
+fi
+
+mkdir -p "$DB"
+
+# Binaries and config stay root-owned; only the database directory and the
+# update log need to be writable by the account freshclam drops to. Order
+# matters -- the recursive chown would otherwise undo the targeted one.
+chown -R root:wheel "$CLAMAV_DIR"
+chown -R "$DB_OWNER" "$DB"
+
+touch /var/log/freshclam.log /var/log/freshclam.err
+chown "$DB_OWNER" /var/log/freshclam.log /var/log/freshclam.err
+chmod 640 /var/log/freshclam.log /var/log/freshclam.err
+
+# Cisco installs outside every default PATH, so the CLI is linked into
+# /usr/local/bin, which /etc/paths puts on the shell PATH.
+#
+# This is belt and braces with the LSEnvironment key, not a substitute for it.
+# LSEnvironment only applies when the launch supplies no PATH of its own, which
+# is true of Finder, Dock and Spotlight but not of a terminal or an IDE -- those
+# pass the shell's PATH, which wins. Since that PATH includes /usr/local/bin,
+# the symlinks make the app work however it was started, and make the tools
+# usable from a shell.
+#
+# Never clobbers: an existing real file (a Homebrew clamav, say) is left alone
+# and reported, so this cannot silently hijack another installation.
+link_cli() {
+    local src="$1" name dest
+    name="$(basename "$src")"
+    dest="/usr/local/bin/${name}"
+    [ -e "$src" ] || return 0
+    if [ -L "$dest" ]; then
+        case "$(readlink "$dest")" in
+            "${CLAMAV_DIR}"/*) ln -sfn "$src" "$dest"; return 0 ;;
+            *) echo "postinstall: leaving foreign symlink $dest alone" >&2; return 0 ;;
+        esac
+    elif [ -e "$dest" ]; then
+        echo "postinstall: $dest already exists, not replacing it" >&2
+        return 0
+    fi
+    ln -s "$src" "$dest"
+}
+
+mkdir -p /usr/local/bin
+for tool in clamscan clamdscan clamdtop clamconf clambc clamsubmit freshclam sigtool; do
+    link_cli "${CLAMAV_DIR}/bin/${tool}"
+done
+link_cli "${CLAMAV_DIR}/sbin/clamd"
+
+# The GUI finds clamscan through the LSEnvironment PATH in its Info.plist, which
+# LaunchServices reads from its own cache. On an upgrade over an existing
+# install that cache can be stale, so re-register the bundle explicitly.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+[ -x "$LSREGISTER" ] && [ -d "$APP" ] && "$LSREGISTER" -f "$APP" 2>/dev/null
+
+# First definition pull. Non-fatal: the daemon retries on its own schedule.
+"${CLAMAV_DIR}/bin/freshclam" --quiet || \
+    echo "postinstall: initial freshclam failed, daemon will retry" >&2
+
+launchctl bootout "system/${DAEMON_LABEL}" 2>/dev/null || true
+launchctl bootstrap system "$PLIST" || \
+    echo "postinstall: bootstrap failed, daemon loads at next boot" >&2
+
+exit 0
