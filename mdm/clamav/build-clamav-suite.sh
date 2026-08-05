@@ -625,11 +625,19 @@ info "uninstaller ${SUPPORT_DIR}/uninstall.sh  (receipts: ${RECEIPTS})"
 # is what stops a standard user's Tauri self-updater from replacing our signed
 # universal build with the vendor's adhoc thin one.
 
+# The component is versioned with the APP's version, not the suite's. A
+# component version should describe the payload it delivers, and pkgbuild
+# already records the bundle at $APP_VERSION in PackageInfo -- claiming a
+# different number for the component itself makes the receipt disagree with the
+# bundle it installed. It also means the receipt, the installed app, and the
+# Version field in Apple Business all report one number instead of three, which
+# is what any install-state check on the device will be comparing.
+# The suite version stays on the distribution (stage 10).
 log "building the GUI component"
 pkgbuild --root "$WORK/gui-root" \
          --scripts "$WORK/scripts" \
          --identifier "$GUI_COMPONENT_ID" \
-         --version "$SUITE_VERSION" \
+         --version "$APP_VERSION" \
          --ownership recommended \
          --install-location / \
          "$WORK/components/zz-clamav-gui.pkg" >/dev/null
