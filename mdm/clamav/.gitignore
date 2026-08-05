@@ -1,0 +1,5 @@
+# Downloaded upstream artifacts, verified against versions.env on every build.
+.cache/
+
+# Built packages.
+out/

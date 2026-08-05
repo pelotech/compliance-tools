@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "packages": {
+    "mdm/clamav": {
+      "release-type": "simple",
+      "component": "clamav-suite",
+      "package-name": "clamav-suite",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": false,
+      "extra-files": []
+    }
+  }
+}

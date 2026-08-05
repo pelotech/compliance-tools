@@ -1,0 +1,50 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits"
+  ],
+  "customManagers": [
+    {
+      "description": "ClamAV CLI release pinned in mdm/clamav/versions.env. The 'clamav-' tag prefix is deliberately OUTSIDE the capture group so Renovate writes back a correctly formatted tag; extractVersionTemplate makes the upstream tags comparable to the bare version we captured.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^mdm/clamav/versions\\.env$/"
+      ],
+      "matchStrings": [
+        "CLAMAV_TAG=clamav-(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
+      "depNameTemplate": "Cisco-Talos/clamav",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^clamav-(?<version>.+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "description": "ClamAV GUI release pinned in mdm/clamav/versions.env. Same prefix-outside-the-group rule as above. Prereleases such as v1.0.7-1 parse as semver prereleases and are skipped by ignoreUnstable.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^mdm/clamav/versions\\.env$/"
+      ],
+      "matchStrings": [
+        "GUI_TAG=v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
+      "depNameTemplate": "ArsenTech/clamav-gui",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "The sha256 pins in versions.env go stale the moment a tag changes. CI recomputes them (see .github/workflows/pr.yml), so these must land as reviewable PRs and never automerge.",
+      "matchDepNames": [
+        "Cisco-Talos/clamav",
+        "ArsenTech/clamav-gui"
+      ],
+      "automerge": false,
+      "commitMessageTopic": "{{depName}}",
+      "semanticCommitType": "feat",
+      "semanticCommitScope": "clamav"
+    }
+  ]
+}

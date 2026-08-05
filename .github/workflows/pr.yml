@@ -1,0 +1,99 @@
+name: PR
+
+on:
+  pull_request:
+    paths:
+      - 'mdm/clamav/**'
+      - '.github/workflows/pr.yml'
+
+concurrency:
+  group: pr-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Renovate bumps the *_TAG values in versions.env but cannot compute the new
+  # sha256 pins, so its PRs would always fail the build's hash check. Recompute
+  # them here and push onto the PR branch so the diff you review is complete.
+  #
+  # Only needs curl and a sha256 tool, hence ubuntu rather than a macOS runner.
+  #
+  # On github.head_ref: pushing back requires the branch name, so there is no
+  # SHA-based alternative. It is safe here because (a) the job is gated to
+  # same-repo branches, so only someone who already has write access can reach
+  # it, and (b) head_ref is never interpolated into a `run:` shell block --
+  # `git push` infers the branch from the checkout. Do not add one.
+  rehash:
+    if: >-
+      startsWith(github.head_ref, 'renovate/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # No GITHUB_TOKEN here on purpose: --rehash only downloads release assets
+      # over plain HTTPS. The script uses a token solely for the releases API in
+      # --refresh mode, so passing one would widen the blast radius of this step
+      # for no benefit.
+      - name: Recompute checksum pins
+        working-directory: mdm/clamav
+        run: ./build-clamav-suite.sh --rehash
+
+      - name: Commit the refreshed pins
+        run: |
+          if git diff --quiet -- mdm/clamav/versions.env; then
+            echo "checksums already match the pinned tags, nothing to do"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(clamav): refresh upstream checksums" \
+            -- mdm/clamav/versions.env
+          git push
+
+  # Builds unsigned, which exercises everything except signing and notarization.
+  # This is what catches an upstream GUI release changing the bundle's shape,
+  # since that assertion needs macOS tooling.
+  #
+  # Depends on `rehash` rather than relying on a re-trigger: a push made with
+  # GITHUB_TOKEN does not start new workflow runs, so the verification has to be
+  # downstream of the push within this same run.
+#  verify:
+#    needs: [rehash]
+#    if: always() && needs.rehash.result != 'failure'
+#    runs-on: macos-15
+#    timeout-minutes: 30
+#    steps:
+#      - uses: actions/checkout@v4
+#        with:
+#          # In-repo PRs (including Renovate's) check out the branch so the
+#          # rehash commit above is included. Fork PRs cannot be pushed to, so
+#          # they fall back to the default merge ref.
+#          ref: >-
+#            ${{ github.event.pull_request.head.repo.full_name == github.repository
+#                && github.head_ref || '' }}
+#
+#      - name: Cache upstream artifacts
+#        uses: actions/cache@v4
+#        with:
+#          path: mdm/clamav/.cache
+#          key: clamav-artifacts-${{ hashFiles('mdm/clamav/versions.env') }}
+#
+#      - name: Build unsigned package
+#        working-directory: mdm/clamav
+#        env:
+#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#        run: ./build-clamav-suite.sh --no-sign
+#
+#      - uses: actions/upload-artifact@v4
+#        with:
+#          name: clamav-suite-unsigned
+#          path: mdm/clamav/out/*.pkg
+#          retention-days: 7

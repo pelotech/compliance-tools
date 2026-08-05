@@ -1,0 +1,8 @@
+.idea/
+.DS_Store
+
+# Signing secrets -- must never be committed. This repo is public.
+*.p8
+*.p12
+*.cer
+*.certSigningRequest
