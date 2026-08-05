@@ -335,8 +335,15 @@ runs to completion.
 
 ## Known constraints
 
-- **`LSEnvironment` is LaunchServices-only.** Running the binary directly from a shell will
-  still hit the "no ClamAV" page. Not a concern for deployed use.
+- **`LSEnvironment` only supplies variables the launch does not already provide.** Finder, Dock
+  and `loginwindow` carry no `PATH` at all, so an app launched from them takes the `LSEnvironment`
+  one — which is why this works for deployed use. But launching from a **terminal** passes the
+  shell's `PATH`, which wins, and the app then hits the "no ClamAV" page. When testing, quit the
+  app fully and launch it from Finder; a terminal launch proves nothing.
+- **A wrapper script is not an alternative.** Replacing `Contents/MacOS/clamav-gui` with a shell
+  trampoline that exports `PATH` and execs the real binary fails: launchd refuses to spawn an app
+  whose main executable is not Mach-O, with `Launch failed / Launchd job spawn failed`. A
+  compiled stub would work, but `LSEnvironment` achieves the same thing without adding a binary.
 - **An admin user can still self-update the GUI.** The Tauri updater is active and points at
   the vendor's releases. The payload is `root:wheel`, so a standard user cannot complete an
   update, but an admin can — which replaces the signed build with the vendor's adhoc one and
