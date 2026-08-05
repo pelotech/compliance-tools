@@ -8,11 +8,11 @@
 #
 # Three things about the upstream artifacts drive the shape of this script:
 #
-#   1. The GUI resolves `clamscan` from PATH only, and a Finder-launched app
-#      inherits launchd's default PATH (/usr/bin:/bin:/usr/sbin:/sbin). Cisco
-#      installs to /usr/local/clamav/bin, which is on neither. Without the
-#      LSEnvironment key injected in stage 4, the GUI shows its "no ClamAV"
-#      state-gate screen and is unusable.
+#   1. The GUI resolves `clamscan` from PATH only, and launchd hands GUI apps
+#      PATH=/usr/bin:/bin:/usr/sbin:/sbin. Cisco installs to
+#      /usr/local/clamav/bin, which is not on it. Stage 4 installs a compiled
+#      launcher as the bundle's main executable to prepend it; without that the
+#      GUI shows its "no ClamAV" state-gate screen and is unusable.
 #   2. There is no macOS pkg upstream, only per-arch archives. This fleet is
 #      Apple Silicon only, so stage 3 uses the arm64 bundle as shipped and the
 #      Distribution restricts hostArchitectures to arm64, which makes an Intel
@@ -56,10 +56,6 @@ GUI_APP_NAME="ClamAV GUI.app"
 # Holds the licensing record and the uninstaller. Deliberately outside
 # CLAMAV_DIR so the two are independently removable.
 SUPPORT_DIR="/usr/local/share/clamav-suite"
-
-# What the GUI's LSEnvironment PATH is set to. /usr/local/clamav/bin first, then
-# launchd's default set, so the vendor CLI wins over anything else on the box.
-GUI_PATH="${CLAMAV_DIR}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 CLAMAV_REPO="Cisco-Talos/clamav"
 GUI_REPO="ArsenTech/clamav-gui"
@@ -286,10 +282,11 @@ esac
 # ------------------------------------------------------------- 1. preflight ---
 
 [ "$(uname -s)" = "Darwin" ] || die "building the package requires macOS"
-need curl tar pkgutil pkgbuild productbuild productsign lipo codesign \
+need curl tar clang pkgutil pkgbuild productbuild productsign lipo codesign \
      xcrun awk mktemp xmllint
 [ -x /usr/libexec/PlistBuddy ] || die "missing /usr/libexec/PlistBuddy"
-for t in postinstall.in uninstall.sh.in freshclam.plist.in README-licensing.txt.in; do
+for t in postinstall.in uninstall.sh.in freshclam.plist.in README-licensing.txt.in \
+         launcher.c; do
   [ -f "$TEMPLATES/$t" ] || die "missing template: templates/$t"
 done
 
@@ -417,18 +414,47 @@ Wrong asset pinned in versions.env?" ;;
 esac
 info "staged   $REL_MACHO ($ARCHS)"
 
-# --------------------------------------------- 4. patch PATH and re-sign ------
-# The GUI shells out to bare `clamscan`, and a Finder-launched app gets
-# launchd's default PATH, which does not include /usr/local/clamav/bin.
-# LSEnvironment is how LaunchServices injects one. This is the fix for the
-# otherwise guaranteed "no ClamAV" state-gate screen.
+# ------------------------------------------- 4. install the launcher ----------
+# The GUI shells out to bare `clamscan`, and launchd hands GUI apps
+# PATH=/usr/bin:/bin:/usr/sbin:/sbin, which does not include Cisco's
+# /usr/local/clamav/bin. Without a fix the app shows its "no ClamAV" state-gate
+# screen and is unusable.
+#
+# The fix is a compiled launcher installed as the bundle's main executable: it
+# prepends the CLI directory to PATH and execs the real binary, renamed
+# alongside it. Setting PATH inside the process is the only approach that cannot
+# be overridden by whatever the launch supplies.
+#
+# Two approaches that look simpler do not work, and are worth not re-trying:
+#   - LSEnvironment in Info.plist supplies only variables the launch does not
+#     already provide, and launchd always provides a PATH, so it is ignored.
+#   - A shell script cannot be the main executable: launchd refuses to spawn a
+#     non-Mach-O one, failing with "Launchd job spawn failed".
+
+REAL_BINARY="$(basename "$REL_MACHO")-bin"
+LAUNCHER_SRC="$WORK/launcher.c"
+render launcher.c "$LAUNCHER_SRC"
+
+mv "$STAGED/$REL_MACHO" "$STAGED/$(dirname "$REL_MACHO")/$REAL_BINARY"
+clang -arch arm64 -O2 -Wall -Werror \
+      -mmacosx-version-min=11.0 \
+      -o "$STAGED/$REL_MACHO" "$LAUNCHER_SRC" \
+  || die "failed to compile the launcher"
+
+# Checked statically rather than by running it: executing the launcher would exec
+# the real binary and open the GUI in the middle of a build.
+LAUNCHER_ABS="$STAGED/$REL_MACHO"
+REAL_ABS="$STAGED/$(dirname "$REL_MACHO")/$REAL_BINARY"
+[ -x "$REAL_ABS" ] || die "the real binary is missing at $REAL_ABS after the rename"
+file -b "$LAUNCHER_ABS" | grep -q 'Mach-O' \
+  || die "the compiled launcher is not Mach-O; launchd would refuse to spawn it"
+strings -a "$LAUNCHER_ABS" | grep -qF "$REAL_BINARY" \
+  || die "the launcher does not reference ${REAL_BINARY}; placeholder substitution failed"
+strings -a "$LAUNCHER_ABS" | grep -qF "${CLAMAV_DIR}/bin" \
+  || die "the launcher does not reference ${CLAMAV_DIR}/bin"
+info "launcher $REL_MACHO -> $REAL_BINARY ($(lipo -archs "$LAUNCHER_ABS"))"
 
 PLIST="$STAGED/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Delete :LSEnvironment' "$PLIST" >/dev/null 2>&1 || true
-/usr/libexec/PlistBuddy -c 'Add :LSEnvironment dict' "$PLIST" >/dev/null
-/usr/libexec/PlistBuddy -c "Add :LSEnvironment:PATH string ${GUI_PATH}" "$PLIST" >/dev/null
-info "LSEnvironment PATH=${GUI_PATH}"
-
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")"
 APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
     "$PLIST" 2>/dev/null || echo "$GUI_VER")"
@@ -437,16 +463,22 @@ APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
 # signature is replaced outright rather than adjusted. Signing with a Developer
 # ID also gives the app a stable designated requirement, which is what the Apple
 # Business PPPC entry is keyed to.
+#
+# Order matters: the real binary is nested code and must be signed before the
+# launcher that execs it, and both before the bundle that seals them. Signing
+# outside-in leaves an inner signature the outer seal does not cover, which
+# fails notarization or trips Gatekeeper on the device rather than here.
 log "signing the GUI"
 if [ "$SIGN" -eq 1 ]; then
-  codesign --force --options runtime --timestamp \
-           --sign "$SIGN_APP" "$STAGED/$REL_MACHO"
-  codesign --force --options runtime --timestamp \
-           --sign "$SIGN_APP" "$STAGED"
+  codesign --force --options runtime --timestamp --sign "$SIGN_APP" "$REAL_ABS"
+  codesign --force --options runtime --timestamp --sign "$SIGN_APP" "$LAUNCHER_ABS"
+  codesign --force --options runtime --timestamp --sign "$SIGN_APP" "$STAGED"
   codesign --verify --deep --strict --verbose=2 "$STAGED"
 else
-  # lipo and the plist edit invalidated the vendor signature; adhoc re-sign so
-  # the staged bundle is at least internally consistent.
+  # Renaming the binary and adding the launcher invalidated the vendor
+  # signature; adhoc re-sign so the staged bundle is internally consistent.
+  codesign --force --options runtime --sign - "$REAL_ABS" >/dev/null 2>&1
+  codesign --force --options runtime --sign - "$LAUNCHER_ABS" >/dev/null 2>&1
   codesign --force --sign - "$STAGED" >/dev/null 2>&1
   info "adhoc signed (--no-sign)"
 fi
@@ -478,8 +510,8 @@ chmod 644 "$DAEMON_PLIST"
 render postinstall.in "$WORK/scripts/postinstall"
 chmod 755 "$WORK/scripts/postinstall"
 
-# The repo is public and this ships a modified GPL-3.0 bundle (the LSEnvironment
-# key), so carry the upstream licence alongside it.
+# The repo is public and this ships a modified GPL-3.0 bundle, so carry the
+# upstream licence alongside it.
 mkdir -p "$WORK/gui-root${SUPPORT_DIR}"
 render README-licensing.txt.in "$WORK/gui-root${SUPPORT_DIR}/README-licensing.txt"
 

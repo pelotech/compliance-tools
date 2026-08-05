@@ -45,12 +45,14 @@ Two things change when you build it yourself, and both matter:
 
 Three properties of the upstream artifacts drive the build, and all three are load-bearing:
 
-1. **The GUI resolves `clamscan` from `PATH` only.** A Finder-launched app inherits launchd's
-   default `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), and Cisco installs to
-   `/usr/local/clamav/bin`, which is on neither that nor any GUI-visible path. Without the
-   `LSEnvironment` key this build injects into `Info.plist`, **every user lands on the GUI's
-   "no ClamAV" state-gate screen** and the app is unusable. There is no configurable path
-   setting in the app to use instead.
+1. **The GUI resolves `clamscan` from `PATH` only.** launchd hands GUI apps
+   `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, and Cisco installs to `/usr/local/clamav/bin`, which is
+   not on it. Without a fix, **every user lands on the GUI's "no ClamAV" state-gate screen** and
+   the app is unusable; there is no configurable path setting to use instead. The build installs a
+   small compiled launcher (`templates/launcher.c`) as the bundle's main executable, which prepends
+   the CLI directory to `PATH` and `execv`s the real binary, renamed to `clamav-gui-bin` beside it.
+   Setting `PATH` inside the process is the only approach that cannot be overridden by whatever the
+   launch supplies.
 2. **There is no macOS `.pkg` upstream**, only per-arch archives. This fleet is Apple Silicon
    only, so the build takes the arm64 `.app.tar.gz` as shipped and restricts the Distribution's
    `hostArchitectures` to `arm64` — without that, an Intel Mac installs the package successfully
@@ -362,23 +364,29 @@ ls -ld "/Applications/ClamAV GUI.app"    # root:wheel
 ls -a "/Applications/ClamAV GUI.app/Contents" | grep '^\._' || echo "no AppleDouble litter"
 ```
 
-Then **launch it from Finder** — not from a terminal, since `LSEnvironment` only applies to
-LaunchServices launches — and confirm it does *not* show the "no ClamAV" page, and that a scan
-runs to completion.
+Then launch it and confirm it does *not* show the "no ClamAV" page, and that a scan runs to
+completion. The launcher sets `PATH` inside the process, so it works from Finder, Dock, Spotlight
+or a terminal alike. To check the mechanism directly, reproduce what launchd supplies:
+
+```sh
+env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin open -a "ClamAV GUI"
+ps eww "$(pgrep -x clamav-gui-bin)" | tr ' ' '\n' | grep ^PATH=
+#   => PATH=/usr/local/clamav/bin:/usr/bin:/bin:/usr/sbin:/sbin
+```
 
 ## Known constraints
 
-- **Two mechanisms cover the GUI's `clamscan` lookup, and both are needed.** `LSEnvironment`
-  only supplies variables the launch does not already provide: Finder, Dock and `loginwindow`
-  carry no `PATH`, so apps launched from them take the `LSEnvironment` one. A **terminal or IDE**
-  launch passes the shell's `PATH`, which wins — and that is where the `/usr/local/bin` symlinks
-  take over, since `/etc/paths` puts that directory on every shell `PATH`. Neither alone is
-  sufficient: `/usr/local/bin` is not on launchd's default `PATH`, so symlinks cannot rescue a
-  Finder launch, and `LSEnvironment` cannot override an inherited one.
-- **A wrapper script is not an alternative.** Replacing `Contents/MacOS/clamav-gui` with a shell
-  trampoline that exports `PATH` and execs the real binary fails: launchd refuses to spawn an app
-  whose main executable is not Mach-O, with `Launch failed / Launchd job spawn failed`. A
-  compiled stub would work, but `LSEnvironment` achieves the same thing without adding a binary.
+- **Two simpler-looking fixes for the GUI's `clamscan` lookup do not work.** Both were measured,
+  so neither is worth re-trying:
+  - **`LSEnvironment` in `Info.plist`** supplies only variables the launch does not already
+    provide, and launchd always provides a `PATH`, so it is silently ignored. It appears to work if
+    tested with `env -i open`, because that removes the very `PATH` that defeats it — a misleading
+    result worth knowing about.
+  - **`/usr/local/bin` symlinks** do not reach the GUI either, because that directory is not on
+    launchd's `PATH`. They exist for shell use, which is worthwhile on its own.
+- **A wrapper *script* is not an alternative to the compiled launcher.** launchd refuses to spawn
+  an app whose main executable is not Mach-O, failing with `Launch failed / Launchd job spawn
+  failed`. That is why the launcher is compiled rather than a shell script.
 - **An admin user can still self-update the GUI.** The Tauri updater is active and points at
   the vendor's releases. The payload is `root:wheel`, so a standard user cannot complete an
   update, but an admin can — which replaces the signed build with the vendor's adhoc one and
@@ -396,7 +404,8 @@ runs to completion.
 ## Licensing
 
 The GUI is GPL-3.0 and this build distributes a **modified** bundle. The modifications are the
-added `LSEnvironment` key and the re-signature — no executable code is altered.
+added launcher (renaming the application binary and installing `templates/launcher.c` compiled as
+the main executable) and the re-signature — the application's own code is not altered.
 `/usr/local/share/clamav-suite/README-licensing.txt` ships in the payload recording the exact
 upstream tags and every modification made; `build-clamav-suite.sh` is the public record of how
 they are applied.

@@ -5,8 +5,11 @@ Bundles unmodified Cisco-Talos ClamAV __CLAMAV_VER__
 
 Bundles ArsenTech ClamAV GUI __GUI_VER__ (GPL-3.0), arm64 build, taken as
 released and modified as follows. No executable code is altered.
-  1. An LSEnvironment PATH key is added to Contents/Info.plist so the app can
-     find clamscan at __CLAMAV_DIR__/bin.
+  1. The application binary is renamed and a small compiled launcher is
+     installed as the bundle's main executable, which prepends
+     __CLAMAV_DIR__/bin to PATH and execs it. Without this the app cannot
+     find clamscan, because launchd does not put that directory on PATH.
+     The launcher's source is templates/launcher.c in the repository below.
   2. The bundle is re-signed with a Developer ID Application certificate.
 
   Upstream source: https://github.com/__GUI_REPO__/releases/tag/__GUI_TAG__

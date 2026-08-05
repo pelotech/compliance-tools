@@ -55,12 +55,9 @@ chmod 640 /var/log/freshclam.log /var/log/freshclam.err
 # Cisco installs outside every default PATH, so the CLI is linked into
 # /usr/local/bin, which /etc/paths puts on the shell PATH.
 #
-# This is belt and braces with the LSEnvironment key, not a substitute for it.
-# LSEnvironment only applies when the launch supplies no PATH of its own, which
-# is true of Finder, Dock and Spotlight but not of a terminal or an IDE -- those
-# pass the shell's PATH, which wins. Since that PATH includes /usr/local/bin,
-# the symlinks make the app work however it was started, and make the tools
-# usable from a shell.
+# These are for shell use. The GUI does not rely on them -- launchd's PATH does
+# not include /usr/local/bin either, so the app finds the CLI through the
+# compiled launcher installed as its main executable instead.
 #
 # Never clobbers: an existing real file (a Homebrew clamav, say) is left alone
 # and reported, so this cannot silently hijack another installation.
@@ -87,9 +84,8 @@ for tool in clamscan clamdscan clamdtop clamconf clambc clamsubmit freshclam sig
 done
 link_cli "${CLAMAV_DIR}/sbin/clamd"
 
-# The GUI finds clamscan through the LSEnvironment PATH in its Info.plist, which
-# LaunchServices reads from its own cache. On an upgrade over an existing
-# install that cache can be stale, so re-register the bundle explicitly.
+# Re-register the bundle so LaunchServices picks up the replaced app rather than
+# a cached record of the previous install.
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 [ -x "$LSREGISTER" ] && [ -d "$APP" ] && "$LSREGISTER" -f "$APP" 2>/dev/null
 
