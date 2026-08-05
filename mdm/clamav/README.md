@@ -10,6 +10,37 @@ Builds one signed, notarized distribution package containing:
 
 The output is intended for **Apple Business Manager → Devices → macOS Packages**.
 
+## Use the published package, or build your own
+
+**Published package.** Each release attaches a signed, notarized `.pkg` to its GitHub release,
+which is all Apple Business Manager needs:
+
+```
+https://github.com/pelotech/compliance-tools/releases
+```
+
+Point ABM at the asset URL, paste the sha256, and use the code requirement printed in the release
+notes for the Full Disk Access entry. Verify what you are about to deploy first — this reports the
+signing identity and confirms the notarization ticket:
+
+```sh
+pkgutil --check-signature clamav-suite-*.pkg
+spctl -a -vvv -t install clamav-suite-*.pkg
+```
+
+**Your own build.** Fork, adjust `versions.env`, run the build. Worth doing if you want to review
+what you deploy, pin different upstream versions, change defaults such as the weekly update
+schedule, or sign under your own Developer ID.
+
+Two things change when you build it yourself, and both matter:
+
+1. **You need your own Apple Developer ID.** A package that is not signed by *someone* cannot be
+   deployed by MDM — macOS requires a signature it can verify. See [Certificates](#certificates).
+   `--no-sign` builds a working package for testing but is not deployable.
+2. **The PPPC code requirement changes.** It pins the signing team's OU, so the requirement string
+   from *your* build is the one to put in your privacy-permissions profile — not the one from these
+   release notes. The build prints yours at the end.
+
 ## Why this is more than `productbuild --package`
 
 Three properties of the upstream artifacts drive the build, and all three are load-bearing:
