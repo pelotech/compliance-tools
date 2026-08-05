@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/pelotech/compliance-tools/compare/clamav-suite-v1.0.1...clamav-suite-v1.0.2) (2026-08-05)
+
+
+### Bug Fixes
+
+* **clamav:** symlink the ClamAV CLI into /usr/local/bin ([fce8afd](https://github.com/pelotech/compliance-tools/commit/fce8afd54640bb78ef73e82b0057aa3cad37f89e))
+
 ## [1.0.1](https://github.com/pelotech/compliance-tools/compare/clamav-suite-v1.0.0...clamav-suite-v1.0.1) (2026-08-05)
 
 
