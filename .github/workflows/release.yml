@@ -32,7 +32,7 @@ jobs:
     if: >-
       needs.release-please.outputs.released == 'true' &&
       needs.release-please.outputs.tag != ''
-    runs-on: macos-15
+    runs-on: macos-26
     # Notarization waits on Apple and routinely takes 15+ minutes.
     timeout-minutes: 60
     permissions:
