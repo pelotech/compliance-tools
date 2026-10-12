@@ -21,7 +21,7 @@ jobs:
       tag: ${{ steps.rp.outputs['mdm/clamav--tag_name'] }}
       version: ${{ steps.rp.outputs['mdm/clamav--version'] }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: rp
         with:
           config-file: release-please-config.json
